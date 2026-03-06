@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useMemo, useCallback } from 'react';
-import { ArrowLeft, ArrowDownRight, FileText, Search, X, Calendar, Filter, Download } from 'lucide-react';
+import { ArrowLeft, ArrowDownRight, FileText, Search, X, Calendar, Filter, Download, Lock, Unlock, Pencil } from 'lucide-react';
 import { formatTime } from '../utils/dateUtils';
 import { WaybillModal } from '../components/waybills/WaybillModal';
 import { createPortal } from 'react-dom';
@@ -9,6 +9,9 @@ import { exportFeedToExcel } from '../utils/exportFeedToExcel';
 import { showErrorNotification, showSuccessNotification } from '../utils/notifications';
 import { useFeedPaginated } from '../hooks/useFeedPaginated';
 import { API_CONFIG } from '../config/api';
+import { useCategories } from '../hooks/useCategories';
+import { CategoryCardType } from '../types';
+import { editFeedTransaction } from '../lib/firebase/transactions';
 
 const EXPORT_PAGE_SIZE = 500;
 const LARGE_EXPORT_WARNING_THRESHOLD = 20000;
@@ -97,6 +100,9 @@ interface Transaction {
       price: number;
     }>;
   };
+  editType?: 'reversal' | 'correction';
+  reversalOf?: string;
+  correctedFrom?: string;
 }
 
 interface WaybillData {
@@ -118,6 +124,19 @@ export const Feed: React.FC = () => {
   console.log('Feed mounted');
   const navigate = useNavigate();
   const { user, isAdmin, loading: authLoading } = useAuth();
+  const { categories, employeeCategories, projectCategories } = useCategories();
+
+  const canEditFeed = useMemo(() => {
+    const email = user?.email || '';
+    const role = (user as any)?.role;
+    console.log('[Feed] user:', user);
+    console.log('[Feed] email:', email);
+    console.log('[Feed] role:', role);
+    console.log('[Feed] isAdmin:', isAdmin);
+
+    const isEmailAllowed = email === 'hotwell.kz@gmail.com';
+    return !!user && (isAdmin || isEmailAllowed);
+  }, [user, isAdmin]);
   
   // Используем оптимизированный хук для пагинированной загрузки
   const {
@@ -125,7 +144,8 @@ export const Feed: React.FC = () => {
     loading: paginatedLoading,
     hasMore,
     loadMore,
-    totalCount
+    totalCount,
+    refresh
   } = useFeedPaginated({
     defaultDays: 60,
     pageSize: 50,
@@ -160,6 +180,16 @@ export const Feed: React.FC = () => {
     currentFilters: { searchQuery?: string; minAmount?: string; maxAmount?: string };
   } | null>(null);
 
+  const [editMode, setEditMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return window.sessionStorage.getItem('feed-edit-mode') === 'true';
+  });
+  const [showEditPasswordModal, setShowEditPasswordModal] = useState(false);
+  const [editPassword, setEditPassword] = useState('');
+  const [editPasswordError, setEditPasswordError] = useState<string>('');
+  const [editingTransaction, setEditingTransaction] = useState<Transaction | null>(null);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
+
   useEffect(() => {
     // Ждем завершения проверки авторизации
     if (authLoading) {
@@ -171,13 +201,7 @@ export const Feed: React.FC = () => {
       navigate('/login');
       return;
     }
-
-    // Если пользователь не админ, перенаправляем на главную
-    if (!isAdmin) {
-      navigate('/');
-      return;
-    }
-  }, [user, isAdmin, authLoading, navigate]);
+  }, [user, authLoading, navigate]);
 
   // ВСЕ ХУКИ ДОЛЖНЫ БЫТЬ ДО УСЛОВНЫХ RETURN
   const filteredTransactions = useMemo(() => {
@@ -445,6 +469,30 @@ export const Feed: React.FC = () => {
               )}
               <span className="hidden sm:inline">{exportLoading ? 'Экспорт...' : 'Скачать отчёт'}</span>
             </button>
+            {canEditFeed && (
+              <button
+                onClick={() => {
+                  if (editMode) {
+                    setEditMode(false);
+                    if (typeof window !== 'undefined') {
+                      window.sessionStorage.removeItem('feed-edit-mode');
+                    }
+                  } else {
+                    setShowEditPasswordModal(true);
+                    setEditPassword('');
+                    setEditPasswordError('');
+                  }
+                }}
+                className={`p-2 rounded-full border ${
+                  editMode
+                    ? 'bg-red-50 border-red-200 text-red-600 hover:bg-red-100'
+                    : 'bg-gray-50 border-gray-200 text-gray-600 hover:bg-gray-100'
+                }`}
+                title={editMode ? 'Выключить режим редактирования' : 'Включить режим редактирования'}
+              >
+                {editMode ? <Unlock className="w-5 h-5" /> : <Lock className="w-5 h-5" />}
+              </button>
+            )}
             <button
               onClick={() => setShowSearch(!showSearch)}
               className="p-2 hover:bg-gray-100 rounded-full"
@@ -599,13 +647,25 @@ export const Feed: React.FC = () => {
                       <div className="divide-y divide-gray-100">
                         {filteredDayTransactions.map((transaction) => (
                           <div key={transaction.id} className="px-4 py-4 hover:bg-gray-50 transition-colors">
-                            <div className="flex justify-between items-start">
+                            <div className="flex justify-between items-start gap-4">
                               <div className="flex items-start space-x-3">
                                 <div className="mt-1">
                                   <ArrowDownRight className="w-5 h-5 text-red-500" />
                                 </div>
                                 <div className="flex flex-col">
-                                  <span className="font-medium text-gray-900">{transaction.fromUser}</span>
+                                  <span className="font-medium text-gray-900 flex items-center gap-2">
+                                    {transaction.fromUser}
+                                    {transaction.editType === 'reversal' && (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-50 text-yellow-800 border border-yellow-200">
+                                        Отмена
+                                      </span>
+                                    )}
+                                    {transaction.editType === 'correction' && (
+                                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-800 border border-emerald-200">
+                                        Исправление
+                                      </span>
+                                    )}
+                                  </span>
                                   <span className="text-sm text-gray-500 mt-1">{transaction.toUser}</span>
                                   {transaction.waybillNumber && (
                                     <button
@@ -625,10 +685,22 @@ export const Feed: React.FC = () => {
                                   </span>
                                 </div>
                               </div>
-                              <div className="flex flex-col items-end">
-                                <span className="font-medium text-base text-red-600">
-                                  -{Math.round(Math.abs(transaction.amount)).toLocaleString('ru-RU', { maximumFractionDigits: 0 })} ₸
-                                </span>
+                              <div className="flex flex-col items-end gap-2">
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium text-base text-red-600">
+                                    -{Math.round(Math.abs(transaction.amount)).toLocaleString('ru-RU', { maximumFractionDigits: 0 })} ₸
+                                  </span>
+                                  {editMode && (
+                                    <button
+                                      onClick={() => setEditingTransaction(transaction)}
+                                      className="inline-flex items-center px-2 py-1 text-xs font-medium text-blue-600 border border-blue-200 rounded-full hover:bg-blue-50"
+                                      title="Редактировать транзакцию"
+                                    >
+                                      <Pencil className="w-3 h-3 mr-1" />
+                                      Редактировать
+                                    </button>
+                                  )}
+                                </div>
                                 <span className="text-sm text-gray-500 mt-1 text-right">
                                   {transaction.description}
                                 </span>
@@ -703,6 +775,157 @@ export const Feed: React.FC = () => {
             }}
             data={selectedWaybill}
             type={waybillType}
+          />,
+          document.body
+        )}
+
+        {showEditPasswordModal && createPortal(
+          <div
+            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[70]"
+            onClick={() => {
+              setShowEditPasswordModal(false);
+              setEditPassword('');
+              setEditPasswordError('');
+            }}
+          >
+            <div
+              className="bg-white rounded-lg shadow-xl max-w-sm w-full mx-4 p-6"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                  <Lock className="w-5 h-5 text-gray-500" />
+                  Режим редактирования
+                </h2>
+                <button
+                  onClick={() => {
+                    setShowEditPasswordModal(false);
+                    setEditPassword('');
+                    setEditPasswordError('');
+                  }}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <p className="text-sm text-gray-600 mb-4">
+                Введите пароль для включения режима редактирования ленты.
+              </p>
+              <input
+                type="password"
+                value={editPassword}
+                onChange={(e) => {
+                  setEditPassword(e.target.value);
+                  setEditPasswordError('');
+                }}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 text-sm"
+                placeholder="Пароль"
+                autoFocus
+              />
+              {editPasswordError && (
+                <p className="mt-2 text-sm text-red-600">{editPasswordError}</p>
+              )}
+              <div className="flex justify-end gap-2 mt-6">
+                <button
+                  onClick={() => {
+                    setShowEditPasswordModal(false);
+                    setEditPassword('');
+                    setEditPasswordError('');
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200"
+                >
+                  Отмена
+                </button>
+                <button
+                  onClick={() => {
+                    const envPassword = import.meta.env.VITE_FEED_EDIT_PASSWORD;
+                    if (!envPassword) {
+                      setEditPasswordError('Пароль не настроен в окружении (VITE_FEED_EDIT_PASSWORD)');
+                      return;
+                    }
+                    if (editPassword !== envPassword) {
+                      setEditPasswordError('Неверный пароль');
+                      return;
+                    }
+                    setEditMode(true);
+                    if (typeof window !== 'undefined') {
+                      window.sessionStorage.setItem('feed-edit-mode', 'true');
+                    }
+                    setShowEditPasswordModal(false);
+                    setEditPassword('');
+                    setEditPasswordError('');
+                    showSuccessNotification('Режим редактирования включён');
+                  }}
+                  className="px-4 py-2 text-sm font-medium text-white bg-emerald-500 rounded-md hover:bg-emerald-600"
+                >
+                  Войти
+                </button>
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
+        {editingTransaction && createPortal(
+          <EditTransactionModal
+            transaction={editingTransaction}
+            peopleAccounts={employeeCategories}
+            objectAccounts={projectCategories}
+            isSaving={isSavingEdit}
+            onClose={() => {
+              if (isSavingEdit) return;
+              setEditingTransaction(null);
+            }}
+            onSave={async (updated) => {
+              if (isSavingEdit) return;
+              try {
+                setIsSavingEdit(true);
+
+                const newFromCategory = employeeCategories.find(c => c.id === updated.fromCategoryId);
+                const newToCategory = projectCategories.find(c => c.id === updated.toCategoryId);
+                const afterAuditCategory = employeeCategories.find(c => c.id === updated.auditCategoryId);
+
+                if (!newFromCategory || !newToCategory) {
+                  throw new Error('Не удалось найти выбранные счета');
+                }
+
+                await editFeedTransaction({
+                  originalTransactionId: editingTransaction.id,
+                  newFromCategory,
+                  newToCategory,
+                  newAmount: updated.amount,
+                  newDescription: updated.comment,
+                  audit: {
+                    transactionId: editingTransaction.id,
+                    before: {
+                      from: editingTransaction.fromUser,
+                      to: editingTransaction.toUser,
+                      amount: editingTransaction.amount,
+                      comment: editingTransaction.description,
+                      category: editingTransaction.fromUser || null
+                    },
+                    after: {
+                      from: newFromCategory.title,
+                      to: newToCategory.title,
+                      amount: updated.amount,
+                      comment: updated.comment,
+                      category: afterAuditCategory?.title ?? null
+                    }
+                  }
+                });
+
+                showSuccessNotification('Транзакция успешно отредактирована');
+                setEditingTransaction(null);
+                refresh();
+              } catch (error) {
+                console.error('Error editing transaction:', error);
+                showErrorNotification(
+                  error instanceof Error ? error.message : 'Ошибка при редактировании транзакции'
+                );
+              } finally {
+                setIsSavingEdit(false);
+              }
+            }}
           />,
           document.body
         )}
@@ -863,6 +1086,209 @@ export const Feed: React.FC = () => {
           </div>,
           document.body
         )}
+      </div>
+    </div>
+  );
+};
+
+interface EditTransactionModalProps {
+  transaction: Transaction;
+  peopleAccounts: CategoryCardType[];
+  objectAccounts: CategoryCardType[];
+  isSaving: boolean;
+  onClose: () => void;
+  onSave: (data: {
+    fromCategoryId: string;
+    toCategoryId: string;
+    amount: number;
+    comment: string;
+    auditCategoryId: string | null;
+  }) => void;
+}
+
+const EditTransactionModal: React.FC<EditTransactionModalProps> = ({
+  transaction,
+  peopleAccounts,
+  objectAccounts,
+  isSaving,
+  onClose,
+  onSave
+}) => {
+  const [fromCategoryId, setFromCategoryId] = useState<string>(() => {
+    const match = peopleAccounts.find(c => c.title === transaction.fromUser);
+    return match?.id ?? '';
+  });
+  const [toCategoryId, setToCategoryId] = useState<string>(() => {
+    const target = objectAccounts.find(c => c.title === transaction.toUser);
+    return target?.id ?? '';
+  });
+  const [amount, setAmount] = useState<string>(Math.abs(transaction.amount).toString());
+  const [comment, setComment] = useState<string>(transaction.description);
+  const [auditCategoryId, setAuditCategoryId] = useState<string>(() => {
+    const match = peopleAccounts.find(c => c.title === transaction.fromUser);
+    return match?.id ?? '';
+  });
+  const [error, setError] = useState<string>('');
+
+  const handleSubmit = () => {
+    setError('');
+
+    if (!fromCategoryId || !toCategoryId) {
+      setError('Выберите счета "Откуда" и "Куда"');
+      return;
+    }
+
+    const numericAmount = Number(amount.replace(',', '.'));
+    if (!numericAmount || numericAmount <= 0) {
+      setError('Введите корректную сумму');
+      return;
+    }
+
+    if (!comment.trim()) {
+      setError('Введите комментарий');
+      return;
+    }
+
+    onSave({
+      fromCategoryId,
+      toCategoryId,
+      amount: numericAmount,
+      comment: comment.trim(),
+      auditCategoryId: auditCategoryId || null
+    });
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[80]"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-lg shadow-xl max-w-lg w-full mx-4"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 py-4 border-b flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+            <Pencil className="w-5 h-5 text-gray-500" />
+            Редактирование транзакции
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-gray-600"
+            disabled={isSaving}
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+        <div className="px-6 py-4 space-y-4">
+          {error && (
+            <div className="p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-700">
+              {error}
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Откуда (счёт)
+              </label>
+              <select
+                value={fromCategoryId}
+                onChange={(e) => setFromCategoryId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <option value="">Выберите счёт</option>
+                {peopleAccounts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Куда (счёт)
+              </label>
+              <select
+                value={toCategoryId}
+                onChange={(e) => setToCategoryId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <option value="">Выберите счёт</option>
+                {objectAccounts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Сумма
+              </label>
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Категория (для журнала аудита)
+              </label>
+              <select
+                value={auditCategoryId}
+                onChange={(e) => setAuditCategoryId(e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+              >
+                <option value="">Выберите человека</option>
+                {peopleAccounts.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.title}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Комментарий
+            </label>
+            <textarea
+              value={comment}
+              onChange={(e) => setComment(e.target.value)}
+              rows={3}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+            />
+          </div>
+        </div>
+        <div className="px-6 py-4 border-t flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            disabled={isSaving}
+            className="px-4 py-2 text-sm font-medium text-gray-700 bg-gray-100 rounded-md hover:bg-gray-200 disabled:opacity-50"
+          >
+            Отмена
+          </button>
+          <button
+            onClick={handleSubmit}
+            disabled={isSaving}
+            className="px-4 py-2 text-sm font-medium text-white bg-emerald-500 rounded-md hover:bg-emerald-600 disabled:opacity-50 flex items-center gap-2"
+          >
+            {isSaving && (
+              <div className="animate-spin rounded-full h-4 w-4 border-2 border-white border-t-transparent" />
+            )}
+            Сохранить
+          </button>
+        </div>
       </div>
     </div>
   );

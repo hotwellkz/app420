@@ -51,6 +51,11 @@ service cloud.firestore {
       allow read, write: if isAuthenticated();
     }
 
+    // Transaction edit audit logs
+    match /transaction_edit_logs/{logId} {
+      allow read, write: if isAuthenticated();
+    }
+
     // Clients collection
     match /clients/{clientId} {
       allow read, write: if isAuthenticated();

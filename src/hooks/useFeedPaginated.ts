@@ -23,6 +23,9 @@ interface FeedTransaction {
   waybillType?: 'income' | 'expense';
   waybillNumber?: string;
   waybillData?: any;
+  editType?: 'reversal' | 'correction';
+  reversalOf?: string;
+  correctedFrom?: string;
 }
 
 interface UseFeedPaginatedOptions {
@@ -115,7 +118,10 @@ export const useFeedPaginated = ({
               waybillId: data.waybillId,
               waybillType: data.waybillType,
               waybillNumber: data.waybillNumber,
-              waybillData: data.waybillData
+              waybillData: data.waybillData,
+              editType: data.editType,
+              reversalOf: data.reversalOf,
+              correctedFrom: data.correctedFrom
             };
             
             // Убираем дубликаты
@@ -199,7 +205,10 @@ export const useFeedPaginated = ({
               waybillId: data.waybillId,
               waybillType: data.waybillType,
               waybillNumber: data.waybillNumber,
-              waybillData: data.waybillData
+              waybillData: data.waybillData,
+              editType: data.editType,
+              reversalOf: data.reversalOf,
+              correctedFrom: data.correctedFrom
             };
             
             const key = `${data.fromUser}-${data.toUser}-${data.amount}-${transactionDate}-${data.description}`;
