@@ -1,0 +1,9 @@
+# Отключаем срабатывание сканера на Firebase API key (он публичный для клиента)
+# https://ntl.fyi/configure-secrets-scanning
+[build.environment]
+  SECRETS_SCAN_SMART_DETECTION_ENABLED = "false"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

@@ -1,0 +1,67 @@
+version: '3.8'
+
+services:
+  whatsapp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: whatsapp-server
+    restart: unless-stopped
+    # Публикуем порт 3002 на хосте -> 3000 в контейнере для доступа через VPN
+    ports:
+      - "3002:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
+      - WHATSAPP_SESSION_PATH=/app/.wwebjs_auth
+      - CHROME_FLAGS=--no-sandbox --disable-setuid-sandbox --disable-dev-shm-usage --disable-gpu --single-process --no-zygote
+      - CHROME_DEVEL_SANDBOX=false
+      - CHROME_NO_SANDBOX=true
+      - DISPLAY=:99
+      - PUPPETEER_DISABLE_HEADLESS_WARNING=true
+      - PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+      - WA_HEADLESS=true
+      - WA_READY_TIMEOUT_MS=90000
+      - FRONTEND_URL=${FRONTEND_URL:-https://2wix.ru}
+      # UID и GID для пользователя nodeuser (1001:1001 из Dockerfile)
+      - PUID=1001
+      - PGID=1001
+    env_file:
+      - .env.production
+    volumes:
+      - ./data:/app/data:rw
+      - ./.wwebjs_auth:/app/.wwebjs_auth:rw
+      - ./.wwebjs_cache:/app/.wwebjs_cache:rw
+    # НЕ указываем user здесь - entrypoint скрипт сам переключится на nodeuser после исправления прав
+    # Это позволяет исправить права при первом запуске, если они неправильные
+    networks:
+      - app400_net
+    # Настройки для стабильности (адаптированы для Synology)
+    cap_add:
+      - SYS_ADMIN
+      - NET_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    shm_size: 2g  # Уменьшено для Synology
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    mem_limit: 2g  # Уменьшено для Synology
+    mem_reservation: 1g
+    # cpus: '1.5'  # Отключено - Synology не поддерживает CPU limits
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 45s
+      timeout: 30s
+      retries: 5
+      start_period: 120s
+
+networks:
+  app400_net:
+    external: true
+    name: app400_net
